@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	browser "github.com/EDDYCJY/fake-useragent"
 )
 
 type Apartments struct {
@@ -41,7 +43,8 @@ func scrape_apartment_listing(url string) string {
 	req.Header.Add("sec-fetch-site", "none")
 	req.Header.Add("sec-fetch-user", "?1")
 	req.Header.Add("upgrade-insecure-requests", "1")
-	req.Header.Add("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
+	// fake user agent generated for Chrome
+	req.Header.Add("user-agent", browser.Chrome())
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -97,7 +100,7 @@ func main() {
 	for {
 		var url string
 
-		fmt.Println("\nEnter the Apartments.com URL to scrape: ")
+		fmt.Println("\nEnter the Apartments.com URL to scrape ('quit' to escape): ")
 		fmt.Scan(&url)
 
 		if !strings.EqualFold(url, "quit") {
