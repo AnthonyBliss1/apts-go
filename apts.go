@@ -80,18 +80,32 @@ func scrape_apartment_listing(url string) string {
 		var records []string
 		for i := range a {
 			if a[i].AvailableDateText != "Available Soon" && a[i].UnitNumber != "" {
-				records = append(records, fmt.Sprintf("Name: %s  Unit: %s Beds: %d Baths: %.1f Rent: $%.0f Availability Date: %s", a[i].Name, a[i].UnitNumber, a[i].Beds, a[i].Baths, a[i].Rent, a[i].AvailableDateText))
+				records = append(records, fmt.Sprintf("Name: %s  Unit: %s Beds: %d Baths: %.1f Sqft: %.0f Rent: $%.0f Availability Date: %s", a[i].Name, a[i].UnitNumber, a[i].Beds, a[i].Baths, a[i].SquareFeet, a[i].Rent, a[i].AvailableDateText))
 			}
 		}
-		return strings.Join(records, "\n")
+
+		if len(records) == 0 {
+			return fmt.Sprintln("No apartments are currently available")
+		} else {
+			return strings.Join(records, "\n")
+		}
 	}
 	return fmt.Sprintln("No match found")
 }
 
 func main() {
-	var url string
+	for {
+		var url string
 
-	fmt.Println("Enter the Apartments.com URL to scrape: ")
-	fmt.Scan(&url)
-	fmt.Println(scrape_apartment_listing(url))
+		fmt.Println("\nEnter the Apartments.com URL to scrape: ")
+		fmt.Scan(&url)
+
+		if !strings.EqualFold(url, "quit") {
+			fmt.Println(scrape_apartment_listing(url))
+		} else {
+			fmt.Println("Exiting application...")
+			break
+		}
+
+	}
 }
