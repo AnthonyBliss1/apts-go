@@ -13,8 +13,8 @@ git clone https://github.com/AnthonyBliss1/apts-go.git
 go run apts.go
 ```
 
-### If you want to try the executable (Go is not installed)
+### If you want to build an executable
 
 ```bash 
-./apts
+go build apts.go
 ```
