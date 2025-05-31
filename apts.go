@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -22,10 +23,10 @@ type Apartments struct {
 	AvailableDateText string
 }
 
-func scrape_apartment_listing(url string, host string) string {
+func scrape_apartment_listing(url string, host string) ([]Apartments, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return fmt.Sprintln("Error creating request:", err)
+		log.Fatal(err)
 	}
 
 	if host == "www.apartments.com" {
@@ -53,17 +54,17 @@ func scrape_apartment_listing(url string, host string) string {
 		resp, err := client.Do(req)
 
 		if err != nil {
-			return fmt.Sprintln("Error sending request:", err)
+			log.Fatal(err)
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			return fmt.Sprintln("Request failed with status code:", resp.StatusCode)
+			log.Fatal(err)
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return fmt.Sprintln("No body of response found:", err)
+			log.Fatal(err)
 		}
 
 		body_string := string(body)
@@ -79,36 +80,32 @@ func scrape_apartment_listing(url string, host string) string {
 
 			err := json.Unmarshal(Data, &a)
 			if err != nil {
-				return fmt.Sprintln("Error parsing data:", err)
+				log.Fatal(err)
 			}
 
 			// if the listing in one 'room' then we print it regardless (it likely is a home for rent with no Name or Unit)
 			if len(a) == 1 {
-				apt := a[0]
-				return fmt.Sprintf("Name: %s Unit: %s Beds: %d Baths: %.1f Sqft: %.0f Rent: $%.0f Availability Date: %s", apt.Name, apt.UnitNumber, apt.Beds, apt.Baths, apt.SquareFeet, apt.Rent, apt.AvailableDateText)
+				return a, nil
 			}
 
 			// for now, printing out our rentals that have an availability date
-			var records []string
-			for i := range a {
-				if a[i].AvailableDateText != "Available Soon" && a[i].UnitNumber != "" {
-					records = append(records, fmt.Sprintf("Name: %s  Unit: %s Beds: %d Baths: %.1f Sqft: %.0f Rent: $%.0f Availability Date: %s", a[i].Name, a[i].UnitNumber, a[i].Beds, a[i].Baths, a[i].SquareFeet, a[i].Rent, a[i].AvailableDateText))
+			var records []Apartments
+			for _, apt := range a {
+				if apt.AvailableDateText != "Available Soon" && apt.UnitNumber != "" {
+					records = append(records, apt)
 				}
 			}
-
-			if len(records) == 0 {
-				return fmt.Sprintln("No apartments are currently available")
-			} else {
-				return strings.Join(records, "\n")
-			}
+			return records, nil
 		}
-		return fmt.Sprintln("No match found")
+
+		//fmt.Println("No apartments found")
 
 	} else if host == "www.zillow.com" {
-		return fmt.Sprintln("DEBUG: Sending request for zillow")
+		fmt.Println("DEBUG: Sending request for zillow")
 	} else {
-		return fmt.Sprintln("Received an invalid URL")
+		fmt.Println("Received an invalid URL")
 	}
+	return []Apartments{}, nil
 }
 
 func main() {
@@ -127,10 +124,21 @@ func main() {
 		//fmt.Println("Host:", host)
 
 		if !strings.EqualFold(raw_url, "quit") {
-			fmt.Println(scrape_apartment_listing(raw_url, host))
+			records, err := scrape_apartment_listing(raw_url, host)
+
+			if err != nil {
+				fmt.Println("Error Scraping Apartments:", err)
+			}
+
+			out, err := json.MarshalIndent(records, "", "  ")
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Println(string(out))
+
 		} else {
 			fmt.Println("Exiting application...")
-			break
+			return
 		}
 
 	}

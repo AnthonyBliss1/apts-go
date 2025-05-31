@@ -1,4 +1,4 @@
-module apts-api-go/apts.py
+module apts-api-go/apts.go
 
 go 1.24.2
 
