@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	browser "github.com/EDDYCJY/fake-useragent"
+	"github.com/go-chi/chi/v5"
 )
 
 type Apartments struct {
@@ -23,10 +24,17 @@ type Apartments struct {
 	AvailableDateText string
 }
 
-func scrape_apartment_listing(url string, host string) ([]Apartments, error) {
-	req, err := http.NewRequest("GET", url, nil)
+func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
+	parsedURL, err := url.Parse(raw_url)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+
+	host := parsedURL.Host
+
+	req, err := http.NewRequest("GET", raw_url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
 	}
 
 	if host == "www.apartments.com" {
@@ -52,19 +60,19 @@ func scrape_apartment_listing(url string, host string) ([]Apartments, error) {
 
 		client := &http.Client{}
 		resp, err := client.Do(req)
-
 		if err != nil {
-			log.Fatal(err)
+			return nil, fmt.Errorf("sending HTTP request to apartments.com failed: %w", err)
 		}
+
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			log.Fatal(err)
+			return nil, fmt.Errorf("received status %d from apartments.com", resp.StatusCode)
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			log.Fatal(err)
+			return nil, fmt.Errorf("reading response body: %w", err)
 		}
 
 		body_string := string(body)
@@ -80,7 +88,7 @@ func scrape_apartment_listing(url string, host string) ([]Apartments, error) {
 
 			err := json.Unmarshal(Data, &a)
 			if err != nil {
-				log.Fatal(err)
+				return nil, fmt.Errorf("parsing json: %w", err)
 			}
 
 			// if the listing in one 'room' then we print it regardless (it likely is a home for rent with no Name or Unit)
@@ -101,45 +109,51 @@ func scrape_apartment_listing(url string, host string) ([]Apartments, error) {
 		//fmt.Println("No apartments found")
 
 	} else if host == "www.zillow.com" {
-		fmt.Println("DEBUG: Sending request for zillow")
+		fmt.Println("\nDEBUG: Sending request for zillow")
 	} else {
-		fmt.Println("Received an invalid URL")
+		return nil, fmt.Errorf("unsupported host")
 	}
 	return []Apartments{}, nil
 }
 
-func main() {
-	for {
-		var raw_url string
-
-		fmt.Println("\nEnter the URL to scrape ('quit' to escape): ")
-		fmt.Scan(&raw_url)
-
-		parsedURL, err := url.Parse(raw_url)
-		if err != nil {
-			fmt.Println("Error parsing raw_url:", err)
-		}
-
-		var host string = parsedURL.Host
-		//fmt.Println("Host:", host)
-
-		if !strings.EqualFold(raw_url, "quit") {
-			records, err := scrape_apartment_listing(raw_url, host)
-
-			if err != nil {
-				fmt.Println("Error Scraping Apartments:", err)
-			}
-
-			out, err := json.MarshalIndent(records, "", "  ")
-			if err != nil {
-				log.Fatal(err)
-			}
-			fmt.Println(string(out))
-
-		} else {
-			fmt.Println("Exiting application...")
-			return
-		}
-
+func scrapeHandler(w http.ResponseWriter, r *http.Request) {
+	raw_url := r.URL.Query().Get("url")
+	if raw_url == "" {
+		http.Error(w, "`url` query parameter is required", http.StatusBadRequest)
+		return
 	}
+
+	records, err := scrape_apartment_listing(raw_url)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "unsupported host") || strings.HasPrefix(err.Error(), "invalid URL") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	if err := json.NewEncoder(w).Encode(records); err != nil {
+		log.Printf("failed to write JSON: %v\n", err)
+	}
+}
+
+func main() {
+	r := chi.NewRouter()
+
+	r.Get("/apts", scrapeHandler)
+
+	fmt.Print("Starting Apts API on 0.0.0.0:8000")
+
+	fmt.Println(`
+ ______     ______   ______   ______        ______     ______   __    
+/\  __ \   /\  == \ /\__  _\ /\  ___\      /\  __ \   /\  == \ /\ \   
+\ \  __ \  \ \  _-/ \/_/\ \/ \ \___  \     \ \  __ \  \ \  _-/ \ \ \  
+ \ \_\ \_\  \ \_\      \ \_\  \/\_____\     \ \_\ \_\  \ \_\    \ \_\ 
+  \/_/\/_/   \/_/       \/_/   \/_____/      \/_/\/_/   \/_/     \/_/  `)
+
+	log.Fatal(http.ListenAndServe("0.0.0.0:8000", r))
 }
