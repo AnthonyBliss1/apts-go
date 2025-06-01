@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	browser "github.com/EDDYCJY/fake-useragent"
 	"github.com/go-chi/chi/v5"
@@ -26,8 +28,10 @@ type Apartments struct {
 	AvailableDateText string
 }
 
-// TODO: need to add choice to use proxy or not. Proxy adds significant latency, might be good to give a choice to the user
-func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
+// defining regex pattern to find the rental section in the body of the response (same pattern from python project proved reliable)
+var pattern = regexp.MustCompile(`rentals:\s*(\[.*?\])\s*,\s*disableMediaCascading`)
+
+func setup_proxies() (*http.Client, error) {
 	// store env variables to build proxy url
 	oxy_name := os.Getenv("OXYLABS_USERNAME")
 	if oxy_name == "" {
@@ -49,25 +53,42 @@ func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
 		return nil, fmt.Errorf("oxy port not set")
 	}
 
-	parsedURL, err := url.Parse(raw_url)
-	if err != nil {
-		return nil, fmt.Errorf("invalid URL: %w", err)
-	}
-
 	// build the proxy_url using the env variables
-	proxy_string := fmt.Sprintf("https://%s:%s@%s:%s", oxy_name, oxy_pass, oxy_proxy_host, oxy_proxy_port)
+	proxy_string := fmt.Sprintf("http://%s:%s@%s:%s", oxy_name, oxy_pass, oxy_proxy_host, oxy_proxy_port)
 	proxy_url, err := url.Parse(proxy_string)
 	if err != nil {
 		return nil, fmt.Errorf("parsing proxy url: %q", err)
 	}
 
+	dialer := &net.Dialer{
+		Timeout:   3 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
 	// create transport using the proxy_url
 	transport := &http.Transport{
-		Proxy: http.ProxyURL(proxy_url),
+		Proxy:               http.ProxyURL(proxy_url),
+		DialContext:         dialer.DialContext,
+		TLSHandshakeTimeout: 3 * time.Second,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+		ForceAttemptHTTP2:   true,
+		//DisableKeepAlives:   true,
 	}
 
 	// wrap the proxy transport in the client
 	client := &http.Client{Transport: transport}
+
+	return client, nil
+}
+
+// TODO: need to add choice to use proxy or not. Fixed proxy latency but maybe still add the option if user doesn't have oxylabs account
+func scrape_apartment_listing(raw_url string, client *http.Client) ([]Apartments, error) {
+	parsedURL, err := url.Parse(raw_url)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
 
 	host := parsedURL.Host
 
@@ -78,7 +99,6 @@ func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
 	}
 
 	if host == "www.apartments.com" {
-
 		// defining headers (same as python version)
 		req.Header.Add("authority", "www.apartments.com")
 		req.Header.Add("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
@@ -97,6 +117,11 @@ func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
 		// fake user agent generated for Chrome
 		req.Header.Add("user-agent", browser.Chrome())
 
+		// drop dead sockets (if idle)
+		if tr, ok := client.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("sending HTTP request to apartments.com failed: %w", err)
@@ -114,9 +139,6 @@ func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
 		}
 
 		body_string := string(body)
-
-		// defining regex pattern to find the rental section in the body of the response (same pattern from python project proved reliable)
-		pattern := regexp.MustCompile(`rentals:\s*(\[.*?\])\s*,\s*disableMediaCascading`)
 
 		// if we find the rentals
 		if match := pattern.FindStringSubmatch(body_string); len(match) > 1 {
@@ -152,37 +174,44 @@ func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
 	return []Apartments{}, nil
 }
 
-func scrape_handler(w http.ResponseWriter, r *http.Request) {
-	raw_url := r.URL.Query().Get("url")
-	if raw_url == "" {
-		http.Error(w, "`url` query parameter is required", http.StatusBadRequest)
-		return
-	}
-
-	records, err := scrape_apartment_listing(raw_url)
-	if err != nil {
-		if strings.HasPrefix(err.Error(), "unsupported host") || strings.HasPrefix(err.Error(), "invalid URL") {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		} else {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+func scrape_handler(client *http.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		raw_url := r.URL.Query().Get("url")
+		if raw_url == "" {
+			http.Error(w, "`url` query parameter is required", http.StatusBadRequest)
+			return
 		}
-		return
-	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+		records, err := scrape_apartment_listing(raw_url, client)
+		if err != nil {
+			if strings.HasPrefix(err.Error(), "unsupported host") || strings.HasPrefix(err.Error(), "invalid URL") {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+			} else {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
 
-	if err := json.NewEncoder(w).Encode(records); err != nil {
-		log.Printf("failed to write JSON: %v\n", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		if err := json.NewEncoder(w).Encode(records); err != nil {
+			log.Printf("failed to write JSON: %v\n", err)
+		}
 	}
 }
 
 func main() {
 	godotenv.Load()
 
+	client, err := setup_proxies()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	r := chi.NewRouter()
 
-	r.Get("/apts", scrape_handler)
+	r.Get("/apts", scrape_handler(client))
 
 	fmt.Print("Starting Apts API on 0.0.0.0:8000")
 
