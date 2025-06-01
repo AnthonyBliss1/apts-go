@@ -7,11 +7,13 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 
 	browser "github.com/EDDYCJY/fake-useragent"
 	"github.com/go-chi/chi/v5"
+	"github.com/joho/godotenv"
 )
 
 type Apartments struct {
@@ -24,14 +26,52 @@ type Apartments struct {
 	AvailableDateText string
 }
 
+// TODO: need to add choice to use proxy or not. Proxy adds significant latency, might be good to give a choice to the user
 func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
+	// store env variables to build proxy url
+	oxy_name := os.Getenv("OXYLABS_USERNAME")
+	if oxy_name == "" {
+		return nil, fmt.Errorf("oxy username not set")
+	}
+
+	oxy_pass := os.Getenv("OXYLABS_PASSWORD")
+	if oxy_pass == "" {
+		return nil, fmt.Errorf("oxy pass not set")
+	}
+
+	oxy_proxy_host := os.Getenv("OXYLABS_PROXY_HOST")
+	if oxy_proxy_host == "" {
+		return nil, fmt.Errorf("oxy host not set")
+	}
+
+	oxy_proxy_port := os.Getenv("OXYLABS_PROXY_PORT")
+	if oxy_proxy_port == "" {
+		return nil, fmt.Errorf("oxy port not set")
+	}
+
 	parsedURL, err := url.Parse(raw_url)
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %w", err)
 	}
 
+	// build the proxy_url using the env variables
+	proxy_string := fmt.Sprintf("https://%s:%s@%s:%s", oxy_name, oxy_pass, oxy_proxy_host, oxy_proxy_port)
+	proxy_url, err := url.Parse(proxy_string)
+	if err != nil {
+		return nil, fmt.Errorf("parsing proxy url: %q", err)
+	}
+
+	// create transport using the proxy_url
+	transport := &http.Transport{
+		Proxy: http.ProxyURL(proxy_url),
+	}
+
+	// wrap the proxy transport in the client
+	client := &http.Client{Transport: transport}
+
 	host := parsedURL.Host
 
+	// establishing the GET request to pull rental data from url
 	req, err := http.NewRequest("GET", raw_url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)
@@ -42,7 +82,6 @@ func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
 		// defining headers (same as python version)
 		req.Header.Add("authority", "www.apartments.com")
 		req.Header.Add("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
-		//req.Header.Add("accept-encoding", "gzip, deflate, br, zstd")
 		req.Header.Add("accept-language", "en-US,en;q=0.9")
 		req.Header.Add("cache-control", "no-cache")
 		req.Header.Add("dnt", "1")
@@ -58,7 +97,6 @@ func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
 		// fake user agent generated for Chrome
 		req.Header.Add("user-agent", browser.Chrome())
 
-		client := &http.Client{}
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("sending HTTP request to apartments.com failed: %w", err)
@@ -77,8 +115,8 @@ func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
 
 		body_string := string(body)
 
-		// defining regex pattern to find the rental section in the body of the response
-		pattern := regexp.MustCompile(`(?s)rentals:\s*(\[[\s\S]*?\])\s*,\s*disableMediaCascading`)
+		// defining regex pattern to find the rental section in the body of the response (same pattern from python project proved reliable)
+		pattern := regexp.MustCompile(`rentals:\s*(\[.*?\])\s*,\s*disableMediaCascading`)
 
 		// if we find the rentals
 		if match := pattern.FindStringSubmatch(body_string); len(match) > 1 {
@@ -106,8 +144,6 @@ func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
 			return records, nil
 		}
 
-		//fmt.Println("No apartments found")
-
 	} else if host == "www.zillow.com" {
 		fmt.Println("\nDEBUG: Sending request for zillow")
 	} else {
@@ -116,7 +152,7 @@ func scrape_apartment_listing(raw_url string) ([]Apartments, error) {
 	return []Apartments{}, nil
 }
 
-func scrapeHandler(w http.ResponseWriter, r *http.Request) {
+func scrape_handler(w http.ResponseWriter, r *http.Request) {
 	raw_url := r.URL.Query().Get("url")
 	if raw_url == "" {
 		http.Error(w, "`url` query parameter is required", http.StatusBadRequest)
@@ -142,9 +178,11 @@ func scrapeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	godotenv.Load()
+
 	r := chi.NewRouter()
 
-	r.Get("/apts", scrapeHandler)
+	r.Get("/apts", scrape_handler)
 
 	fmt.Print("Starting Apts API on 0.0.0.0:8000")
 
