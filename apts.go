@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -306,8 +309,8 @@ func chat_handler(proxy_client *http.Client) http.HandlerFunc {
 	}
 }
 
-func setup_telegram_bot() error {
-	var bot_token, chat_started string
+func setup_telegram_bot() (bot_token string, chat_id string, err error) {
+	var chat_started string
 
 	fmt.Println("\nBeginning Telegram Bot Setup...")
 	fmt.Println("> Open Telegram")
@@ -337,25 +340,25 @@ func setup_telegram_bot() error {
 
 	resp, err := http.Get(get_updates_url)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("get_updates_url returned %d", resp.StatusCode)
+		return "", "", fmt.Errorf("get_updates_url returned %d", resp.StatusCode)
 	}
 
 	var payload map[string]interface{}
 
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return fmt.Errorf("decoding getUpdates JSON: %w", err)
+		return "", "", fmt.Errorf("decoding getUpdates JSON: %w", err)
 	}
 
 	//fmt.Printf("Raw getUpdates payload: %+v\n", payload)
 
 	resultArr, _ := payload["result"].([]interface{})
 	if len(resultArr) == 0 {
-		return fmt.Errorf("no messages found in chat. Please send your bot a message")
+		return "", "", fmt.Errorf("no messages found in chat. Please send your bot a message")
 	}
 
 	last := resultArr[len(resultArr)-1].(map[string]interface{})
@@ -364,32 +367,145 @@ func setup_telegram_bot() error {
 	chat_obj, _ := msg_obj["chat"].(map[string]interface{})
 	float_id, _ := chat_obj["id"].(float64)
 
-	chat_id := strconv.FormatFloat(float_id, 'f', 0, 64)
+	chat_id = strconv.FormatFloat(float_id, 'f', 0, 64)
 
 	fmt.Printf("\n> Retrieved Chat ID: %s\n", chat_id)
 	fmt.Println("> Storing Bot Token and Chat ID in environment variables...")
 
+	fmt.Println("\n> Telegram Bot Sucessfully Enabled!")
+
+	return bot_token, chat_id, nil
+}
+
+func run_systemd() error {
+	const systemd_template = `[Unit]
+	Description=go-apts service
+	After=network.target
+
+	[Service]
+	WorkingDirectory=%s
+	ExecStart=%s
+	Restart=on-failure
+
+	[Install]
+	WantedBy=multi-user.target
+	`
+
+	current_user := os.Getenv("USER")
+	if current_user == "" {
+		current_user = "root"
+	}
+
+	binary_path, _ := filepath.Abs(os.Args[0])
+	binary_dir := filepath.Dir(binary_path)
+
+	unitText := fmt.Sprintf(systemd_template, binary_dir, binary_path)
+
+	unit_path := "/etc/systemd/system/go-apts.service"
+	if err := os.WriteFile(unit_path, []byte(unitText), 0o644); err != nil {
+		return fmt.Errorf("could not write systemd unit: %w", err)
+	}
+
+	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		return fmt.Errorf("daemon-reload failed: %v (%s)", err, string(out))
+	}
+
+	if out, err := exec.Command("systemctl", "enable", "go-apts.service").CombinedOutput(); err != nil {
+		if !strings.Contains(string(out), "is enabled") {
+			return fmt.Errorf("enable failed: %v (%s)", err, string(out))
+		}
+	}
+
+	if out, err := exec.Command("systemctl", "restart", "go-apts.service").CombinedOutput(); err != nil {
+		return fmt.Errorf("restart failed: %v (%s)", err, string(out))
+	}
+	return nil
+}
+
+func setup_go_apts() {
+	var proxies_enabled, telegram_enabled, telly_setup, bot_token, chat_id, systemd_enabled string
+	var err error
+
 	m, _ := godotenv.Read(".env")
 
-	m["TELEGRAM_BOT_TOKEN"] = bot_token
-	m["TELEGRAM_CHAT_ID"] = chat_id
+	fmt.Print("\n\nDo you want to enable proxies with OxyLabs? Proxies help avoid IP blocking (y / n) ")
+	fmt.Scan(&proxies_enabled)
+	if strings.EqualFold(proxies_enabled, "y") {
+		oxy_name, _ := os.LookupEnv("OXYLABS_USERNAME")
+		oxy_pass, _ := os.LookupEnv("OXYLABS_PASSWORD")
+		oxy_host, _ := os.LookupEnv("OXYLABS_PROXY_HOST")
+		oxy_port, _ := os.LookupEnv("OXYLABS_PROXY_PORT")
+		if oxy_name != "" || oxy_pass != "" || oxy_host != "" || oxy_port != "" {
+		} else {
+			proxies_enabled = "n"
+			fmt.Println("\nUnable to locate all OxyLabs credentials")
+			fmt.Println("Starting without proxies enabled...")
+		}
+	} else {
+		proxies_enabled = "n"
+	}
+
+	fmt.Print("\nDo you want to enable notifications with Telegram? (y / n) ")
+	fmt.Scan(&telegram_enabled)
+
+	if strings.EqualFold(telegram_enabled, "y") {
+		telly_test := os.Getenv("TELEGRAM_BOT_TOKEN")
+
+		if telly_test == "" {
+			fmt.Println("\nYou must setup a Telgram bot and add your credentials")
+			fmt.Print("Do you wish to set that up now? (y / n) ")
+			fmt.Scan(&telly_setup)
+
+			if strings.EqualFold(telly_setup, "y") {
+				bot_token, chat_id, err = setup_telegram_bot()
+				m["TELEGRAM_BOT_TOKEN"] = bot_token
+				m["TELEGRAM_CHAT_ID"] = chat_id
+				godotenv.Write(m, ".env")
+				if err != nil {
+					fmt.Printf("Error during Telegram bot setup: %q", err)
+				}
+				telegram_enabled = "y"
+			} else {
+				telegram_enabled = "n"
+			}
+		}
+	}
+
+	m["proxies_enabled"] = proxies_enabled
+	m["telegram_enabled"] = telegram_enabled
 
 	godotenv.Write(m, ".env")
 
 	os.Setenv("TELEGRAM_BOT_TOKEN", bot_token)
 	os.Setenv("TELEGRAM_CHAT_ID", chat_id)
+	os.Setenv("proxies_enabled", proxies_enabled)
+	os.Setenv("telegram_enabled", telegram_enabled)
 
-	fmt.Println("\n> Finished!")
+	godotenv.Load(".env")
 
-	return nil
+	fmt.Print("\nDo you want to setup Go Apts as a systemd service? (y / n) ")
+	fmt.Scan(&systemd_enabled)
+
+	if strings.EqualFold(systemd_enabled, "y") {
+		err := run_systemd()
+		if err != nil {
+			log.Fatal(err)
+		} else {
+			log.Fatal(fmt.Print("\n> 'go-apts.service' Sucessfully Started!\n"))
+		}
+	}
 }
 
 func main() {
-	var proxy_enabled, tel_enabled, telly_setup string
+	var proxies_enabled, telegram_enabled string
 
-	godotenv.Load()
+	godotenv.Load(".env")
 
 	client := &http.Client{}
+	proxy_client, err := setup_proxies()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	r := chi.NewRouter()
 
@@ -400,64 +516,45 @@ func main() {
  \ \_____\  \ \_____\     \ \_\ \_\  \ \_\      \ \_\  \/\_____\ 
   \/_____/   \/_____/      \/_/\/_/   \/_/       \/_/   \/_____/ `)
 
-	fmt.Print("\nDo you want to enable proxies with OxyLabs? Proxies help avoid IP blocking (y / n) ")
-	fmt.Scan(&proxy_enabled)
-	if strings.EqualFold(proxy_enabled, "y") {
-		oxy_name, _ := os.LookupEnv("OXYLABS_USERNAME")
-		oxy_pass, _ := os.LookupEnv("OXYLABS_PASSWORD")
-		oxy_host, _ := os.LookupEnv("OXYLABS_PROXY_HOST")
-		oxy_port, _ := os.LookupEnv("OXYLABS_PROXY_PORT")
-		if oxy_name != "" || oxy_pass != "" || oxy_host != "" || oxy_port != "" {
-			proxy_client, err := setup_proxies()
-			if err != nil {
-				log.Fatal(err)
-			}
-			r.Get("/apts", scrape_handler(proxy_client))
-		} else {
-			proxy_enabled = "n"
-			fmt.Println("\nUnable to locate all OxyLabs credentials")
-			fmt.Println("Starting without proxies enabled...")
-			r.Get("/apts", scrape_handler(client))
-		}
-	} else {
-		proxy_enabled = "n"
-		r.Get("/apts", scrape_handler(client))
+	setup_mode := flag.Bool("setup", false, "Run interactive configuration and exit")
+	flag.Parse()
+
+	oxy_name, _ := os.LookupEnv("OXYLABS_USERNAME")
+	oxy_pass, _ := os.LookupEnv("OXYLABS_PASSWORD")
+	oxy_host, _ := os.LookupEnv("OXYLABS_PROXY_HOST")
+	oxy_port, _ := os.LookupEnv("OXYLABS_PROXY_PORT")
+	telegram_bot_token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	telegram_chat_id := os.Getenv("TELEGRAM_CHAT_ID")
+	proxies_enabled, _ = os.LookupEnv("proxies_enabled")
+	telegram_enabled, _ = os.LookupEnv("telegram_enabled")
+
+	switch {
+	case oxy_name == "" || oxy_pass == "" || oxy_host == "" || oxy_port == "":
+		proxies_enabled = "n"
+	case telegram_bot_token == "" || telegram_chat_id == "":
+		telegram_enabled = "n"
 	}
 
-	fmt.Print("\nDo you want to enable notifications with Telegram? (y / n) ")
-	fmt.Scan(&tel_enabled)
-
-	if strings.EqualFold(tel_enabled, "y") {
-		telly_test := os.Getenv("TELEGRAM_BOT_TOKEN")
-
-		if telly_test == "" {
-			fmt.Println("\nYou must setup a Telgram bot and add your credentials")
-			fmt.Print("Do you wish to set that up now? (y / n) ")
-			fmt.Scan(&telly_setup)
-
-			if strings.EqualFold(telly_setup, "y") {
-				err := setup_telegram_bot()
-				if err != nil {
-					fmt.Printf("Error during Telegram bot setup: %q", err)
-				}
-				tel_enabled = "y"
-			} else {
-				tel_enabled = "n"
-			}
-		}
+	if *setup_mode {
+		setup_go_apts()
+		proxies_enabled, _ = os.LookupEnv("proxies_enabled")
+		telegram_enabled, _ = os.LookupEnv("telegram_enabled")
 	}
 
-	if strings.EqualFold(tel_enabled, "y") && strings.EqualFold(proxy_enabled, "y") {
-		proxy_client, err := setup_proxies()
-		if err != nil {
-			log.Fatal(err)
-		}
+	switch {
+	case strings.EqualFold(proxies_enabled, "y") && strings.EqualFold(telegram_enabled, "y"):
+		r.Get("/apts", scrape_handler(proxy_client))
 		r.Post("/chat", chat_handler(proxy_client))
-		fmt.Println("\n<GO APTS> /apts and /chat running on port 8000")
-	} else if strings.EqualFold(tel_enabled, "y") && strings.EqualFold(proxy_enabled, "n") {
+		fmt.Println("\n<GO APTS> /apts and /chat with proxies running on port 8000")
+	case strings.EqualFold(proxies_enabled, "n") && strings.EqualFold(telegram_enabled, "y"):
+		r.Get("/apts", scrape_handler(client))
 		r.Post("/chat", chat_handler(client))
 		fmt.Println("\n<GO APTS> /apts and /chat running on port 8000")
-	} else {
+	case strings.EqualFold(proxies_enabled, "y") && strings.EqualFold(telegram_enabled, "n"):
+		r.Get("/apts", scrape_handler(proxy_client))
+		fmt.Println("\n<GO APTS> /apts with proxies running on port 8000")
+	default:
+		r.Get("/apts", scrape_handler(client))
 		fmt.Println("\n<GO APTS> /apts running on port 8000")
 	}
 
