@@ -1,4 +1,10 @@
-## GO APTS
+ ______     ______        ______     ______   ______   ______    
+/\  ___\   /\  __ \      /\  __ \   /\  == \ /\__  _\ /\  ___\   
+\ \ \__ \  \ \ \/\ \     \ \  __ \  \ \  _-/ \/_/\ \/ \ \___  \  
+ \ \_____\  \ \_____\     \ \_\ \_\  \ \_\      \ \_\  \/\_____\ 
+  \/_____/   \/_____/      \/_/\/_/   \/_/       \/_/   \/_____/
+
+
 GO APTS is an easily deployable, self-hosted, API solution. 
 
 It's an adaptation of my apartments-api written in Python. I'm currently learning Go and think it's a great lesson to translate an existing project. 
