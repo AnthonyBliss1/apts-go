@@ -22,7 +22,7 @@ Run with the `--setup` flag to:
   - Create a `systemd` service for always on service (Linux only, `launchd` coming soon!)
   - Create a scheduled task with cron (hourly, daily, weekly, monthly) to request `/chat` with a provided Apartments.com URL
 
-Creating a scheduled task through GO APTS is useful to monitor an apartment listing. Although if proxies are NOT enabled, you are running the risk of getting your IP blocked by Apartments.com.
+Creating a scheduled task through GO APTS is useful to monitor an apartment listing. If proxies are NOT enabled, you run the risk of getting your IP blocked by Apartments.com.
 
 Scheduled tasks can only be created if `/chat` is enabled and a `systemd` service is created. This currently works with Linux only but I will implement `launchd` support for MacOS soon.
 
