@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -309,6 +310,36 @@ func chat_handler(proxy_client *http.Client) http.HandlerFunc {
 	}
 }
 
+func create_bash(op_sys string, ip string, url string) (script string, err error) {
+	if op_sys == "linux" || op_sys == "darwin" {
+		script = `#!/bin/bash
+
+if ! command -v curl >/dev/null 2>&1; then
+	echo "curl not found. Attempting to install..."
+	if command -v apt-get >/dev/null 2>&1; then
+		sudo apt-get update && sudo apt-get install -y curl
+	elif command -v yum >/dev/null 2>&1; then
+		sudo yum install -y curl
+	else
+		echo "No supported package manager found (apt-get or yum). Please install curl manually."
+		exit 1
+	fi
+
+	if ! command -v curl >/dev/null 2>&1; then
+		echo "Installation of curl failed. Aborting."
+		exit 1
+	fi
+fi
+
+curl -X POST "http://` + ip + `:8000/chat?url=` + url + `"
+`
+
+	} else {
+		return "", fmt.Errorf("cannot create bash script for %q", op_sys)
+	}
+	return script, nil
+}
+
 func setup_telegram_bot() (bot_token string, chat_id string, err error) {
 	var chat_started string
 
@@ -377,7 +408,7 @@ func setup_telegram_bot() (bot_token string, chat_id string, err error) {
 	return bot_token, chat_id, nil
 }
 
-func run_systemd() error {
+func setup_systemd() error {
 	const systemd_template = `[Unit]
 	Description=go-apts service
 	After=network.target
@@ -422,11 +453,67 @@ func run_systemd() error {
 	return nil
 }
 
-func setup_go_apts() {
-	var proxies_enabled, telegram_enabled, telly_setup, bot_token, chat_id, systemd_enabled string
+func setup_scheduled_task() error {
+	var op_sys, ip, url, cron_dir, script_name, script_path string
+	var timing int
+
+	//unique_time := fmt.Sprint(time.Now())
+
+	fmt.Println("\nBeginning Scheduled Task Setup...")
+
+	op_sys = runtime.GOOS
+	fmt.Println("> Operating System Detected: ", op_sys)
+
+	fmt.Print("> Please enter your devices IP address: ")
+	fmt.Scan(&ip)
+
+	fmt.Print("> Please enter the URL of the listing you wish to monitor: ")
+	fmt.Scan(&url)
+
+	fmt.Println("\n> Building Bash Script...")
+	script, err := create_bash(op_sys, ip, url)
+	if err != nil {
+		return fmt.Errorf("making bash: %q", err)
+	}
+
+	fmt.Println("> Creating Scheduled Task...")
+	if op_sys == "linux" || op_sys == "darwin" {
+		fmt.Print("> Schedule this task Hourly (1), Daily (2), Weekly (3), or Monthly (4) ? ")
+		fmt.Scan(&timing)
+
+		switch timing {
+		case 1:
+			cron_dir = "/etc/cron.hourly"
+		case 2:
+			cron_dir = "/etc/cron.daily"
+		case 3:
+			cron_dir = "/etc/cron.weekly"
+		case 4:
+			cron_dir = "/etc/cron.monthly"
+		default:
+			return fmt.Errorf("cannot set timeframe for that")
+		}
+
+		// TODO make sure script_name is a unique name
+		script_name = "go-apts-schedule"
+		script_path = filepath.Join(cron_dir, script_name)
+
+		if err := os.WriteFile(script_path, []byte(script), 0755); err != nil {
+			return fmt.Errorf("failed to write script to %s: %w", script_path, err)
+		}
+	}
+
+	fmt.Println("\n> Scheduled Task Sucessfully Built! DEBUG ", cron_dir)
+
+	return nil
+}
+
+func setup_go_apts() error {
+	var proxies_enabled, telegram_enabled, telly_setup, bot_token, chat_id, systemd_enabled, sch_task_enabled, op_sys string
 	var err error
 
 	m, _ := godotenv.Read(".env")
+	op_sys = runtime.GOOS
 
 	fmt.Print("\n\nDo you want to enable proxies with OxyLabs? Proxies help avoid IP blocking (y / n) ")
 	fmt.Scan(&proxies_enabled)
@@ -487,13 +574,34 @@ func setup_go_apts() {
 	fmt.Scan(&systemd_enabled)
 
 	if strings.EqualFold(systemd_enabled, "y") {
-		err := run_systemd()
-		if err != nil {
-			log.Fatal(err)
-		} else {
-			log.Fatal(fmt.Print("\n> 'go-apts.service' Sucessfully Started!\n"))
+		switch op_sys {
+		case "linux":
+			err := setup_systemd()
+			if err != nil {
+				log.Fatal(err)
+			}
+		case "darwin":
+			return fmt.Errorf("macos detected")
+		default:
+			return fmt.Errorf("unsupported os detected: %q", op_sys)
 		}
 	}
+
+	if strings.EqualFold(systemd_enabled, "y") && strings.EqualFold(telegram_enabled, "y") {
+		fmt.Print("\nDo you want to monitor a listing with Telegram? (y / n) ")
+		fmt.Scan(&sch_task_enabled)
+
+		if sch_task_enabled == "y" {
+			err := setup_scheduled_task()
+			if err != nil {
+				return err
+			} else {
+				log.Fatal()
+			}
+		}
+
+	}
+	return nil
 }
 
 func main() {

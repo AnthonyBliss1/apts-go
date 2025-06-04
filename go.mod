@@ -1,4 +1,4 @@
-module apts-api-go/apts.go
+module github.com/anthonybliss1/go-apts
 
 go 1.24.2
 
