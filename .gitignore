@@ -1,5 +1,5 @@
 # ignore build file
-/apts
-/apts-linux
+/go-apts
+/go-apts-linux
 /GOCOMP.txt
 .env
