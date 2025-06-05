@@ -204,14 +204,14 @@ func scrape_apartment_listing(raw_url string, client *http.Client) ([]Apartments
 	return []Apartments{}, "", nil
 }
 
-func send_notification(raw_url string, proxy_client *http.Client) error {
+func send_notification(raw_url string, client *http.Client) error {
 
 	api_url, chat_id, err := setup_telegram_chat()
 	if err != nil {
 		return err
 	}
 
-	records, listing_name, err := scrape_apartment_listing(raw_url, proxy_client)
+	records, listing_name, err := scrape_apartment_listing(raw_url, client)
 	if err != nil {
 		return err
 	}
@@ -292,7 +292,7 @@ func scrape_handler(client *http.Client) http.HandlerFunc {
 	}
 }
 
-func chat_handler(proxy_client *http.Client) http.HandlerFunc {
+func chat_handler(client *http.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw_url := r.URL.Query().Get("url")
 		if raw_url == "" {
@@ -300,7 +300,7 @@ func chat_handler(proxy_client *http.Client) http.HandlerFunc {
 			return
 		}
 
-		if err := send_notification(raw_url, proxy_client); err != nil {
+		if err := send_notification(raw_url, client); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -310,7 +310,7 @@ func chat_handler(proxy_client *http.Client) http.HandlerFunc {
 	}
 }
 
-func create_bash(op_sys string, ip string, url string) (script string, err error) {
+func create_bash(op_sys string, url string) (script string, err error) {
 	if op_sys == "linux" || op_sys == "darwin" {
 		script = `#!/bin/bash
 
@@ -331,7 +331,7 @@ if ! command -v curl >/dev/null 2>&1; then
 	fi
 fi
 
-curl -X POST "http://` + ip + `:8000/chat?url=` + url + `"
+curl -X POST "http://127.0.0.1:8000/chat?url=` + url + `"
 `
 
 	} else {
@@ -453,8 +453,80 @@ func setup_systemd() error {
 	return nil
 }
 
+func setup_launchd() error {
+	label := "com.go-apts.agent"
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("could not find user home directory: %q", err)
+	}
+
+	agents_dir := filepath.Join(home, "Library", "LaunchAgents")
+	if err := os.MkdirAll(agents_dir, 0o755); err != nil {
+		return fmt.Errorf("could not create LaunchAgents dir: %w", err)
+	}
+
+	binary_path, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		return fmt.Errorf("cannot determine executable path: %w", err)
+	}
+
+	binary_dir := filepath.Dir(binary_path)
+
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>%s</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>%s</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>%s</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>%s</string>
+  <key>StandardErrorPath</key>
+  <string>%s</string>
+</dict>
+</plist>`,
+		label,
+		binary_path,
+		binary_dir,
+		filepath.Join(home, "Library", "Logs", "go-apts.log"),
+		filepath.Join(home, "Library", "Logs", "go-apts.log"),
+	)
+
+	plist_path := filepath.Join(agents_dir, label+".plist")
+	if err := os.WriteFile(plist_path, []byte(plist), 0o644); err != nil {
+		return fmt.Errorf("could not write plist to %s: %w", plist_path, err)
+	}
+
+	unload_cmd := exec.Command("launchctl", "unload", plist_path)
+	unload_cmd.Stderr = &bytes.Buffer{}
+	unload_cmd.Run()
+
+	load_cmd := exec.Command("launchctl", "load", plist_path)
+	out, err := load_cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to load LaunchAgent: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	return nil
+}
+
 func setup_scheduled_task() error {
-	var op_sys, ip, url, cron_dir, script_name, script_path string
+	var op_sys, url, cron_dir, script_name, script_path string
 	var timing int
 
 	//unique_time := fmt.Sprint(time.Now())
@@ -464,22 +536,20 @@ func setup_scheduled_task() error {
 	op_sys = runtime.GOOS
 	fmt.Println("> Operating System Detected: ", op_sys)
 
-	fmt.Print("> Please enter your devices IP address: ")
-	fmt.Scan(&ip)
-
 	fmt.Print("> Please enter the URL of the listing you wish to monitor: ")
 	fmt.Scan(&url)
 
 	fmt.Println("\n> Building Bash Script...")
-	script, err := create_bash(op_sys, ip, url)
+	script, err := create_bash(op_sys, url)
 	if err != nil {
 		return fmt.Errorf("making bash: %q", err)
 	}
 
 	fmt.Println("> Creating Scheduled Task...")
-	if op_sys == "linux" || op_sys == "darwin" {
-		fmt.Print("> Schedule this task Hourly (1), Daily (2), Weekly (3), or Monthly (4) ? ")
-		fmt.Scan(&timing)
+	fmt.Print("> Schedule this task Hourly (1), Daily (2), Weekly (3), or Monthly (4) ? ")
+	fmt.Scan(&timing)
+
+	if op_sys == "linux" {
 
 		switch timing {
 		case 1:
@@ -494,22 +564,26 @@ func setup_scheduled_task() error {
 			return fmt.Errorf("cannot set timeframe for that")
 		}
 
-		// TODO make sure script_name is a unique name
+		// TODO make sure script_name is a unique name so user can add multiple tasks
 		script_name = "go-apts-schedule"
 		script_path = filepath.Join(cron_dir, script_name)
 
 		if err := os.WriteFile(script_path, []byte(script), 0755); err != nil {
 			return fmt.Errorf("failed to write script to %s: %w", script_path, err)
 		}
+	} else if op_sys == "darwin" {
+		return fmt.Errorf("cannot create scheduled task for macos (coming soon)")
+	} else {
+		return fmt.Errorf("unsupported os: %q", op_sys)
 	}
 
-	fmt.Println("\n> Scheduled Task Sucessfully Built! DEBUG ", cron_dir)
+	fmt.Println("\n> Scheduled Task Sucessfully Built!")
 
 	return nil
 }
 
 func setup_go_apts() error {
-	var proxies_enabled, telegram_enabled, telly_setup, bot_token, chat_id, systemd_enabled, sch_task_enabled, op_sys string
+	var proxies_enabled, telegram_enabled, telly_setup, bot_token, chat_id, always_on_enabled, sch_task_enabled, op_sys string
 	var err error
 
 	m, _ := godotenv.Read(".env")
@@ -549,7 +623,7 @@ func setup_go_apts() error {
 				m["TELEGRAM_CHAT_ID"] = chat_id
 				godotenv.Write(m, ".env")
 				if err != nil {
-					fmt.Printf("Error during Telegram bot setup: %q", err)
+					return fmt.Errorf("error during Telegram bot setup: %q", err)
 				}
 				telegram_enabled = "y"
 			} else {
@@ -570,10 +644,10 @@ func setup_go_apts() error {
 
 	godotenv.Load(".env")
 
-	fmt.Print("\nDo you want to setup Go Apts as a systemd service? (y / n) ")
-	fmt.Scan(&systemd_enabled)
+	fmt.Print("\nDo you want to setup Go Apts as an always on service? (y / n) ")
+	fmt.Scan(&always_on_enabled)
 
-	if strings.EqualFold(systemd_enabled, "y") {
+	if strings.EqualFold(always_on_enabled, "y") {
 		switch op_sys {
 		case "linux":
 			err := setup_systemd()
@@ -581,25 +655,29 @@ func setup_go_apts() error {
 				log.Fatal(err)
 			}
 		case "darwin":
-			return fmt.Errorf("macos detected")
+			err := setup_launchd()
+			if err != nil {
+				log.Fatal(err)
+			}
 		default:
 			return fmt.Errorf("unsupported os detected: %q", op_sys)
 		}
 	}
 
-	if strings.EqualFold(systemd_enabled, "y") && strings.EqualFold(telegram_enabled, "y") {
+	if strings.EqualFold(always_on_enabled, "y") && strings.EqualFold(telegram_enabled, "y") {
 		fmt.Print("\nDo you want to monitor a listing with Telegram? (y / n) ")
 		fmt.Scan(&sch_task_enabled)
 
-		if sch_task_enabled == "y" {
+		if strings.EqualFold(sch_task_enabled, "y") {
 			err := setup_scheduled_task()
 			if err != nil {
 				return err
 			} else {
 				log.Fatal()
 			}
+		} else if strings.EqualFold(sch_task_enabled, "n") {
+			log.Fatal()
 		}
-
 	}
 	return nil
 }
@@ -610,10 +688,6 @@ func main() {
 	godotenv.Load(".env")
 
 	client := &http.Client{}
-	proxy_client, err := setup_proxies()
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	r := chi.NewRouter()
 
@@ -644,13 +718,21 @@ func main() {
 	}
 
 	if *setup_mode {
-		setup_go_apts()
+		err := setup_go_apts()
+		if err != nil {
+			log.Fatal(err)
+		}
+
 		proxies_enabled, _ = os.LookupEnv("proxies_enabled")
 		telegram_enabled, _ = os.LookupEnv("telegram_enabled")
 	}
 
 	switch {
 	case strings.EqualFold(proxies_enabled, "y") && strings.EqualFold(telegram_enabled, "y"):
+		proxy_client, err := setup_proxies()
+		if err != nil {
+			log.Fatal(err)
+		}
 		r.Get("/apts", scrape_handler(proxy_client))
 		r.Post("/chat", chat_handler(proxy_client))
 		fmt.Println("\n<GO APTS> /apts and /chat with proxies running on port 8000")
@@ -659,6 +741,10 @@ func main() {
 		r.Post("/chat", chat_handler(client))
 		fmt.Println("\n<GO APTS> /apts and /chat running on port 8000")
 	case strings.EqualFold(proxies_enabled, "y") && strings.EqualFold(telegram_enabled, "n"):
+		proxy_client, err := setup_proxies()
+		if err != nil {
+			log.Fatal(err)
+		}
 		r.Get("/apts", scrape_handler(proxy_client))
 		fmt.Println("\n<GO APTS> /apts with proxies running on port 8000")
 	default:
