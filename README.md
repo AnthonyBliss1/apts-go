@@ -9,7 +9,7 @@
 
 ***For Linux and MacOS***
 
-GO APTS is an adaptation of my apartments-api written in Python. I'm currently learning Go and think it's a great lesson to translate an existing project.
+Go Apts is an adaptation of my apartments-api written in Python. I'm currently learning Go and think it's a great lesson to translate an existing project.
 
 The application contains two routes: `GET /apts` and `POST /chat`, requires one query param: `url`, and returns the available units. (Only `/apts` is enabled by default)
 
@@ -24,7 +24,7 @@ Run with the `--setup` flag to:
   - Setup always on service through `systemd` or `launchd`
   - Create a scheduled task with cron (hourly, daily, weekly, monthly) to request `/chat` with a provided Apartments.com URL
 
-Creating a scheduled task through GO APTS is useful to monitor an apartment listing. If proxies are NOT enabled, you run the risk of getting your IP blocked by Apartments.com.
+Creating a scheduled task through Go Apts is useful to monitor an apartment listing. If proxies are NOT enabled, you run the risk of getting your IP blocked by Apartments.com.
 
 Scheduled tasks can only be created if `/chat` and always on service are enabled.
 
