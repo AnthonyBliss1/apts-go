@@ -37,43 +37,34 @@ This application only accepts Apartments.com listings but will eventually accept
 git clone https://github.com/AnthonyBliss1/go-apts.git
 ```
 
-or 
+2. **Create .env file in the builds directory and store credentials**
 
-**Use go install**
 ```bash
-go install github.com/anthonybliss1/go-apts
+cd go-apts/builds
 ```
 
-2. **Create .env file in the project directory and store credentials**
 ```bash
 cp .env.template .env
 ```
 
-3. **Run the application**
-```bash
-go run go-apts.go
-```
-
-or 
+3. **Build the application (From root directory)**
 
 ```bash
-go run go-apts.go --setup
+cd ..
 ```
-
-### Building an Executable File
-
-1. **Run the build command**
-```bash 
-go build go-apts.go
-```
-
-2. **Run the built project**
-```bash
-./go-apts
-```
-
-or 
 
 ```bash
-./go-apts --setup
+go build -o builds/go-apts ./cmd/go-apts/go-apts.go
+```
+
+4. **Run the application**
+
+```bash
+./builds/go-apts
+```
+
+or
+
+```bash
+./builds/go-apts --setup
 ```
