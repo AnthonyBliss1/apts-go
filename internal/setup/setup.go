@@ -384,6 +384,8 @@ func Setup_go_apts() error {
 		} else if strings.EqualFold(sch_task_enabled, "n") {
 			log.Fatal()
 		}
+	} else if strings.EqualFold(always_on_enabled, "y") {
+		log.Fatal()
 	}
 	return nil
 }

@@ -30,6 +30,9 @@ Scheduled tasks can only be created if `/chat` and always on service are enabled
 
 This application only accepts Apartments.com listings but will eventually accept URLs from other providers like Zillow.com.
 
+> [!IMPORTANT]
+> If you run into any permission errors, run with `sudo`
+
 ### Usage
 
 1. **Clone this repo**
