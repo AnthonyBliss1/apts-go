@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -232,10 +233,12 @@ func Setup_launchd() error {
 }
 
 func Setup_scheduled_task() error {
-	var op_sys, url, cron_dir, script_name, script_path string
+	var op_sys, url, cron_dir, script_name, cron_spec string
 	var timing int
+	var new_crontab bytes.Buffer
 
-	//unique_time := fmt.Sprint(time.Now())
+	unique_time := fmt.Sprint(time.Now().Unix())
+	script_name = "go-apts-schedule_" + unique_time
 
 	fmt.Println("\nBeginning Scheduled Task Setup...")
 
@@ -270,15 +273,71 @@ func Setup_scheduled_task() error {
 			return fmt.Errorf("cannot set timeframe for that")
 		}
 
-		// TODO make sure script_name is a unique name so user can add multiple tasks
-		script_name = "go-apts-schedule"
-		script_path = filepath.Join(cron_dir, script_name)
+		script_path := filepath.Join(cron_dir, script_name)
 
 		if err := os.WriteFile(script_path, []byte(script), 0755); err != nil {
 			return fmt.Errorf("failed to write script to %s: %w", script_path, err)
 		}
 	} else if op_sys == "darwin" {
-		return fmt.Errorf("cannot create scheduled task for macos (coming soon)")
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("finding home dir: %q", err)
+		}
+
+		script_dir := filepath.Join(home, "go-apts-scheduled-task")
+		if err := os.MkdirAll(script_dir, 0755); err != nil {
+			return fmt.Errorf("failed to create script directory %s: %w", script_dir, err)
+		}
+
+		script_path := filepath.Join(script_dir, script_name)
+
+		if err := os.WriteFile(script_path, []byte(script), 0755); err != nil {
+			return fmt.Errorf("failed to write script to %s: %w", script_path, err)
+		}
+
+		switch timing {
+		case 1:
+			cron_spec = "@hourly"
+		case 2:
+			cron_spec = "0 0 * * *"
+		case 3:
+			cron_spec = "0 0 * * 0"
+		case 4:
+			cron_spec = "0 0 1 * *"
+		default:
+			return fmt.Errorf("cannot set timeframe for that")
+		}
+
+		cron_line := fmt.Sprintf("%s %s", cron_spec, script_path)
+
+		get_crontab := exec.Command("crontab", "-l")
+		existing, err := get_crontab.Output()
+		if err != nil {
+			fmt.Println("> No crontab exists, creating a new one...")
+		} else {
+			lines := strings.Split(string(existing), "\n")
+			for _, line := range lines {
+				if strings.TrimSpace(line) == "" {
+					continue
+				}
+				if strings.TrimSpace(line) == cron_line {
+					fmt.Println("> Job already exists in crontab... stopping addition...")
+					return nil
+				}
+				new_crontab.WriteString(line + "\n")
+			}
+		}
+
+		new_crontab.WriteString(cron_line + "\n")
+		install_cmd := exec.Command("crontab", "-")
+		install_cmd.Stdin = &new_crontab
+
+		if err := install_cmd.Run(); err != nil {
+			return fmt.Errorf("failed to install new crontab: %w", err)
+		}
+
+		fmt.Printf("> Installed new cron job: %s\n", cron_line)
+
 	} else {
 		return fmt.Errorf("unsupported os: %q", op_sys)
 	}
@@ -325,11 +384,13 @@ func Setup_go_apts() error {
 
 			if strings.EqualFold(telly_setup, "y") {
 				bot_token, chat_id, err = Setup_telegram_bot()
-				m["TELEGRAM_BOT_TOKEN"] = bot_token
-				m["TELEGRAM_CHAT_ID"] = chat_id
-				godotenv.Write(m, ".env")
 				if err != nil {
 					return fmt.Errorf("error during Telegram bot setup: %q", err)
+				}
+				m["TELEGRAM_BOT_TOKEN"] = bot_token
+				m["TELEGRAM_CHAT_ID"] = chat_id
+				if err := godotenv.Write(m, ".env"); err != nil {
+					return fmt.Errorf("failed to write telegram variables to .env: %q", err)
 				}
 				telegram_enabled = "y"
 			} else {
@@ -341,7 +402,9 @@ func Setup_go_apts() error {
 	m["proxies_enabled"] = proxies_enabled
 	m["telegram_enabled"] = telegram_enabled
 
-	godotenv.Write(m, ".env")
+	if err := godotenv.Write(m, ".env"); err != nil {
+		return fmt.Errorf("failed to write proxies_enabled and telegram_enabled to .env: %q", err)
+	}
 
 	os.Setenv("TELEGRAM_BOT_TOKEN", bot_token)
 	os.Setenv("TELEGRAM_CHAT_ID", chat_id)
@@ -356,13 +419,11 @@ func Setup_go_apts() error {
 	if strings.EqualFold(always_on_enabled, "y") {
 		switch op_sys {
 		case "linux":
-			err := Setup_systemd()
-			if err != nil {
+			if err := Setup_systemd(); err != nil {
 				log.Fatal(err)
 			}
 		case "darwin":
-			err := Setup_launchd()
-			if err != nil {
+			if err := Setup_launchd(); err != nil {
 				log.Fatal(err)
 			}
 		default:
@@ -375,8 +436,7 @@ func Setup_go_apts() error {
 		fmt.Scan(&sch_task_enabled)
 
 		if strings.EqualFold(sch_task_enabled, "y") {
-			err := Setup_scheduled_task()
-			if err != nil {
+			if err := Setup_scheduled_task(); err != nil {
 				return err
 			} else {
 				log.Fatal()

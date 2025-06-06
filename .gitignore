@@ -1,6 +1,4 @@
 # ignore build file
 /builds/go-apts
 /builds/GOCOMP.txt
-/builds/linux
-/builds/macos
 .env

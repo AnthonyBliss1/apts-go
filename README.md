@@ -71,3 +71,6 @@ or
 ```bash
 ./builds/go-apts --setup
 ```
+
+> ![NOTE]
+> Pre-built extetubales are available for Linux and MacOS in the `/builds` folder
