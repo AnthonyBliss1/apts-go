@@ -53,7 +53,7 @@ cp .env.template .env
 3. **Build the application (From root directory)**
 
 > [!NOTE]
-> Pre-built executables are available for Linux and MacOS in the `/builds` folder (.env file must be in the same directory as the executable)
+> Pre-built executables are available in the `/builds` folder (.env file must be in the same directory as the executable)
 
 ```bash
 cd ..
